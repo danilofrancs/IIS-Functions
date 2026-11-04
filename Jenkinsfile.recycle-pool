@@ -17,7 +17,7 @@ pipeline {
         disableConcurrentBuilds()            // nunca dois recycles ao mesmo tempo
         timeout(time: 30, unit: 'MINUTES')
         timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '50'))
+        buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
     parameters {
