@@ -69,6 +69,7 @@ pipeline {
                     rm -rf "$INV_DIR"
                     cp -r inventory "$INV_DIR"
                     rm -f "$INV_DIR/group_vars/all/vault.yml"
+                    mkdir -p "$WORKSPACE/logs"
                     ansible-galaxy collection install -r requirements.yml >/dev/null
                 '''
             }
@@ -123,6 +124,7 @@ def rodarPlaybook(boolean executar) {
                   -e "confirmar=$CONFIRMAR" \
                   -e "busca_exata=$BUSCA_EXATA" \
                   -e "executado_por=$EXECUTADO_POR" \
+                  -e "{\\"log_recycle\\": \\"$WORKSPACE/logs/iis-recycle-pool.log\\"}" \
                   -e "vault_winrm_user={{ lookup('env', 'WINRM_USER') }}" \
                   -e "vault_winrm_password={{ lookup('env', 'WINRM_PASS') }}"
             '''

@@ -1,0 +1,8 @@
+# Nunca versionar o vault: no Jenkins a credencial vem de "iis-deploy-winrm"
+inventory/group_vars/all/vault.yml
+.vault_pass*
+*.retry
+
+# Gerados pelo Jenkins
+.jenkins-inventory/
+logs/

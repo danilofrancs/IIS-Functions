@@ -233,7 +233,7 @@
   serial: 1
   max_fail_percentage: 0
   vars:
-    log_arquivo: "{{ playbook_dir }}/../logs/iis-recycle-pool.log"
+    log_arquivo: "{{ log_recycle | default(playbook_dir ~ '/../logs/iis-recycle-pool.log') }}"
   tasks:
     - name: Parar aqui se nao houver confirmacao
       ansible.builtin.meta: end_play
