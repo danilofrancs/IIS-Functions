@@ -1,0 +1,332 @@
+---
+# Recicla (recycle) o(s) Application Pool(s) dos sites IIS de um cliente.
+# Procura o cliente em todos os servidores do grupo [iis], mostra o plano e,
+# so com confirmar=SIM, recicla UM servidor por vez.
+#
+# Uso:
+#   1) Ver o plano (NAO altera nada):
+#      ansible-playbook IIS/recycle-pool-cliente.yml -e cliente=acme --ask-vault-pass
+#   2) Executar o recycle:
+#      ansible-playbook IIS/recycle-pool-cliente.yml -e cliente=acme -e confirmar=SIM --ask-vault-pass
+#
+# Opcoes (-e):
+#   cliente=acme                     (obrigatorio) parte do nome do site ou da aplicacao
+#   busca_exata=true                 nome exato do site/aplicacao, em vez de "contem"
+#   confirmar=SIM                    sem isso, roda so o plano (simulacao)
+#   permitir_pool_compartilhada=true recicla tambem pools usadas por OUTROS sites (afeta outros clientes!)
+#   max_sites_por_servidor=2         aborta tudo se a busca casar com mais sites que isso em um servidor
+#   max_pools_por_servidor=10        aborta tudo se houver mais pools A RECICLAR que isso em um servidor
+#   pausa_entre_servidores=15        segundos de espera entre um servidor e o proximo
+#   --limit web01,web02              restringe os servidores (ex.: --limit homolog para testar)
+#
+# Travas de seguranca:
+#   - nome do cliente validado (min. 3 caracteres, so letras/numeros/. _ -)
+#   - pools de sistema (DefaultAppPool, .NET v4.5...) nunca sao recicladas
+#   - pool compartilhada com site de outro cliente e bloqueada por padrao
+#   - pool parada nao e iniciada nem reciclada (so reportada)
+#   - busca ampla demais (muitos sites/pools por servidor) aborta tudo antes de alterar
+#   - um servidor por vez; se um falhar, para e nao segue para os proximos
+#   - cada recycle fica registrado em logs/iis-recycle-pool.log (maquina do ansible)
+
+# IMPORTANTE: validacao, plano e travas rodam DENTRO dos hosts iis (run_once),
+# e nao em "localhost". Assim o --limit nunca consegue pular as travas.
+
+# -----------------------------------------------------------------------------
+# 1) Validacao + descoberta (somente leitura) + plano + travas
+#    Se qualquer trava falhar, o playbook inteiro para e nada e alterado.
+# -----------------------------------------------------------------------------
+- name: Localizar sites e pools do cliente
+  hosts: iis
+  gather_facts: false
+  vars:
+    pools_protegidas:
+      - DefaultAppPool
+      - .NET v2.0
+      - .NET v2.0 Classic
+      - .NET v4.5
+      - .NET v4.5 Classic
+      - Classic .NET AppPool
+  tasks:
+    - name: Validar nome do cliente
+      ansible.builtin.assert:
+        that:
+          - cliente is defined
+          - cliente | string | trim | length >= 3
+          - cliente | string | trim is match('^[A-Za-z0-9._-]+$')
+        fail_msg: >-
+          Informe o cliente com -e cliente=NOME (minimo 3 caracteres; apenas letras,
+          numeros, ponto, hifen e underline).
+        quiet: true
+      run_once: true
+      any_errors_fatal: true
+
+    - name: Buscar sites/aplicacoes e analisar as pools
+      ansible.windows.win_powershell:
+        parameters:
+          Cliente: "{{ cliente | string | trim }}"
+          BuscaExata: "{{ busca_exata | default(false) | bool | string }}"
+          PoolsProtegidas: "{{ pools_protegidas }}"
+        depth: 5
+        script: |
+          [CmdletBinding()]
+          param(
+              [string]$Cliente,
+              [string]$BuscaExata,
+              [string[]]$PoolsProtegidas
+          )
+          $ErrorActionPreference = 'Stop'
+          $Ansible.Changed = $false
+          Import-Module WebAdministration
+          $exata = [System.Convert]::ToBoolean($BuscaExata)
+
+          function Test-Cliente([string]$valor) {
+              if ([string]::IsNullOrEmpty($valor)) { return $false }
+              if ($exata) { return $valor -ieq $Cliente }
+              return $valor.IndexOf($Cliente, [StringComparison]::OrdinalIgnoreCase) -ge 0
+          }
+          function Get-Rotulo($e) { if ($e.Caminho -eq '/') { $e.Site } else { "$($e.Site)$($e.Caminho)" } }
+
+          # Todas as entradas do servidor: raiz de cada site + cada aplicacao
+          $entradas = @()
+          foreach ($site in Get-Website) {
+              $entradas += [pscustomobject]@{ Site = $site.name; Caminho = '/'; Pool = $site.applicationPool }
+              foreach ($app in Get-WebApplication -Site $site.name) {
+                  $entradas += [pscustomobject]@{ Site = $site.name; Caminho = $app.path; Pool = $app.applicationPool }
+              }
+          }
+          $entradas = @($entradas | Where-Object { $_.Pool })
+
+          # Do cliente: site com o nome do cliente (inclui todas as apps dele)
+          # ou aplicacao cujo ultimo trecho do caminho bate com o cliente
+          $alvo = @($entradas | Where-Object {
+              (Test-Cliente $_.Site) -or
+              ($_.Caminho -ne '/' -and (Test-Cliente ($_.Caminho.TrimEnd('/').Split('/')[-1])))
+          })
+          $chavesAlvo = @($alvo | ForEach-Object { Get-Rotulo $_ })
+
+          $pools = @()
+          foreach ($nomePool in @($alvo | Select-Object -ExpandProperty Pool -Unique)) {
+              try   { $estado = (Get-WebAppPoolState -Name $nomePool).Value }
+              catch { $estado = 'Inexistente' }
+
+              # Quem mais (fora do cliente) usa esta pool?
+              $outros = @($entradas | Where-Object { $_.Pool -eq $nomePool } |
+                          ForEach-Object { Get-Rotulo $_ } |
+                          Where-Object { $chavesAlvo -notcontains $_ })
+
+              $bloqueio = ''
+              if ($PoolsProtegidas -contains $nomePool) { $bloqueio = 'PROTEGIDA' }
+              elseif ($estado -eq 'Inexistente')       { $bloqueio = 'INEXISTENTE' }
+              elseif ($outros.Count -gt 0)              { $bloqueio = 'COMPARTILHADA' }
+
+              $pools += [pscustomobject]@{
+                  Pool           = $nomePool
+                  Estado         = $estado
+                  Bloqueio       = $bloqueio
+                  UsadaPor       = @($alvo | Where-Object { $_.Pool -eq $nomePool } | ForEach-Object { Get-Rotulo $_ })
+                  OutrosUsuarios = $outros
+              }
+          }
+
+          [pscustomobject]@{
+              Sites = @($alvo | Select-Object -ExpandProperty Site -Unique)
+              Pools = $pools
+          }
+      check_mode: false   # somente leitura: roda mesmo com --check
+      register: descoberta
+
+    - name: Definir pools elegiveis
+      ansible.builtin.set_fact:
+        recycle_sites: "{{ descoberta.output[0].Sites | default([]) }}"
+        recycle_pools_info: "{{ pools_info }}"
+        recycle_alvos: "{{ alvos }}"
+        # 'SIM'/'NAO' em texto: evita erro de tipo (texto x numero) na trava
+        recycle_excede: >-
+          {{ 'SIM' if ((descoberta.output[0].Sites | default([]) | length) > (max_sites_por_servidor | default(2) | int)
+                       or (alvos | length) > (max_pools_por_servidor | default(10) | int)) else 'NAO' }}
+        recycle_resumo: >-
+          {{ inventory_hostname }} ({{ descoberta.output[0].Sites | default([]) | length }} sites,
+          {{ alvos | length }} pools a reciclar)
+      vars:
+        pools_info: "{{ descoberta.output[0].Pools | default([]) }}"
+        bloqueios_impeditivos: >-
+          {{ ['PROTEGIDA', 'INEXISTENTE']
+             + ([] if (permitir_pool_compartilhada | default(false) | bool) else ['COMPARTILHADA']) }}
+        alvos: >-
+          {{ pools_info
+             | selectattr('Estado', 'equalto', 'Started')
+             | rejectattr('Bloqueio', 'in', bloqueios_impeditivos)
+             | map(attribute='Pool') | list }}
+
+    # Plano consolidado de todos os servidores analisados + travas globais.
+    # run_once: roda uma vez so; any_errors_fatal: se falhar, para TUDO.
+    - name: Plano e travas
+      run_once: true
+      any_errors_fatal: true
+      vars:
+        plano: >-
+          {{ ansible_play_hosts | map('extract', hostvars)
+             | selectattr('recycle_pools_info', 'defined') | list }}
+        lim_sites: "{{ max_sites_por_servidor | default(2) | int }}"
+        lim_pools: "{{ max_pools_por_servidor | default(10) | int }}"
+        excedidos: >-
+          {{ plano | selectattr('recycle_excede', 'equalto', 'SIM')
+             | map(attribute='recycle_resumo') | list }}
+      block:
+        - name: Mostrar plano
+          ansible.builtin.debug:
+            msg: |-
+              Cliente: {{ cliente }} | busca: {{ 'exata' if (busca_exata | default(false) | bool) else 'contem' }} | modo: {{ 'EXECUCAO' if (confirmar | default('') == 'SIM') else 'SIMULACAO (use -e confirmar=SIM para executar)' }}
+              {% for s in plano if s.recycle_pools_info | length > 0 %}
+
+              [{{ s.inventory_hostname }}] sites: {{ s.recycle_sites | join(', ') }}
+                VAI RECICLAR ({{ s.recycle_alvos | length }}):
+              {% for p in s.recycle_pools_info if p.Pool in s.recycle_alvos %}
+                  + {{ p.Pool }}  ->  {{ p.UsadaPor | join(', ') }}
+              {% else %}
+                  (nenhuma)
+              {% endfor %}
+                NAO VAI RECICLAR ({{ s.recycle_pools_info | length - s.recycle_alvos | length }}):
+              {% for p in s.recycle_pools_info if p.Pool not in s.recycle_alvos %}
+                  - {{ p.Pool }} ({{ p.Estado }}): {{ p.Bloqueio or ('pool ' ~ p.Estado) }}{% if p.OutrosUsuarios | length > 0 %} com mais {{ p.OutrosUsuarios | length }} site(s), ex.: {{ p.OutrosUsuarios[:3] | join(', ') }}{% endif %}
+
+              {% else %}
+                  (nenhuma)
+              {% endfor %}
+              {% endfor %}
+              {% set sem = groups['iis'] | reject('in', plano | map(attribute='inventory_hostname') | list) | list %}
+              {% if sem %}
+
+              Servidores NAO analisados (inacessiveis, erro ou fora do --limit): {{ sem | join(', ') }}
+              {% endif %}
+
+        - name: Trava - cliente encontrado em algum servidor
+          ansible.builtin.assert:
+            that: (plano | map(attribute='recycle_pools_info') | flatten | length) > 0
+            fail_msg: "Nenhum site/aplicacao encontrado para '{{ cliente }}'. Nada foi alterado."
+            quiet: true
+
+        # Busca ampla demais = casou com varios SITES (ex.: cliente=sales pegaria todos).
+        # So contam as pools que de fato serao recicladas (as bloqueadas nao contam).
+        - name: Trava - busca nao pode ser ampla demais
+          ansible.builtin.assert:
+            that: excedidos | length == 0
+            fail_msg: >-
+              Busca '{{ cliente }}' ampla demais em: {{ excedidos | join('; ') }}.
+              Limites: {{ lim_sites }} site(s) e {{ lim_pools }} pool(s) a reciclar por servidor.
+              Refine o nome, use -e busca_exata=true ou ajuste -e max_sites_por_servidor / -e max_pools_por_servidor.
+              Nada foi alterado.
+            quiet: true
+
+        - name: Trava - existe pool elegivel
+          ansible.builtin.assert:
+            that: (plano | map(attribute='recycle_alvos') | flatten | length) > 0
+            fail_msg: "Ha sites do cliente, mas nenhuma pool elegivel (motivos no plano acima). Nada foi alterado."
+            quiet: true
+
+# -----------------------------------------------------------------------------
+# 2) Execucao - um servidor por vez; falhou um, para tudo
+# -----------------------------------------------------------------------------
+- name: Reciclar pools do cliente
+  hosts: iis
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  vars:
+    log_arquivo: "{{ playbook_dir }}/../logs/iis-recycle-pool.log"
+  tasks:
+    - name: Parar aqui se nao houver confirmacao
+      ansible.builtin.meta: end_play
+      when: confirmar | default('') != 'SIM'
+
+    - name: Pular servidor sem pools elegiveis
+      ansible.builtin.meta: end_host
+      when: recycle_alvos | default([]) | length == 0
+
+    - name: Recycle
+      block:
+        - name: Recycle das pools
+          ansible.windows.win_powershell:
+            parameters:
+              Pools: "{{ recycle_alvos }}"
+              TimeoutSegundos: 60
+            depth: 5
+            script: |
+              [CmdletBinding()]
+              param([string[]]$Pools, [int]$TimeoutSegundos)
+              $ErrorActionPreference = 'Stop'
+              Import-Module WebAdministration
+              $Ansible.Changed = $false
+              $falhou = $false
+
+              foreach ($p in $Pools) {
+                  $r = [ordered]@{ Pool = $p; Status = ''; PidsAntes = @(); PidsDepois = @(); Mensagem = '' }
+                  try {
+                      # Reconfere o estado na hora (pode ter mudado desde o plano)
+                      $estado = (Get-WebAppPoolState -Name $p).Value
+                      if ($estado -ne 'Started') {
+                          $r.Status = 'IGNORADA'
+                          $r.Mensagem = "Pool em estado '$estado' no momento da execucao; nada feito."
+                      }
+                      else {
+                          $wp = "IIS:\AppPools\$p\WorkerProcesses"
+                          $r.PidsAntes = @(Get-ChildItem -LiteralPath $wp -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.processId })
+
+                          Restart-WebAppPool -Name $p
+                          $Ansible.Changed = $true
+
+                          $limite = (Get-Date).AddSeconds($TimeoutSegundos)
+                          do {
+                              Start-Sleep -Seconds 2
+                              $estado = (Get-WebAppPoolState -Name $p).Value
+                          } while ($estado -ne 'Started' -and (Get-Date) -lt $limite)
+
+                          $r.PidsDepois = @(Get-ChildItem -LiteralPath $wp -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.processId })
+                          if ($estado -eq 'Started') {
+                              $r.Status = 'OK'
+                              $r.Mensagem = 'Recycle concluido (novo w3wp sobe na proxima requisicao).'
+                          }
+                          else {
+                              $r.Status = 'FALHA'
+                              $r.Mensagem = "Pool ficou em '$estado' apos $TimeoutSegundos s."
+                              $falhou = $true
+                          }
+                      }
+                  }
+                  catch {
+                      $r.Status = 'FALHA'
+                      $r.Mensagem = $_.Exception.Message
+                      $falhou = $true
+                  }
+                  [pscustomobject]$r
+              }
+              if ($falhou) { $Ansible.Failed = $true }
+          register: resultado
+
+      always:
+        - name: Resultado
+          ansible.builtin.debug:
+            msg: |-
+              {% for r in resultado.output %}
+              {{ r.Pool }}: {{ r.Status }} - {{ r.Mensagem }} (PIDs antes: {{ r.PidsAntes | join(',') or '-' }} / depois: {{ r.PidsDepois | join(',') or '-' }})
+              {% endfor %}
+          when: resultado.output | default([]) | length > 0
+
+        - name: Registrar no log
+          ansible.builtin.lineinfile:
+            path: "{{ log_arquivo }}"
+            line: "{{ now(fmt='%Y-%m-%d %H:%M:%S') }};{{ executado_por | default(lookup('env', 'USER'), true) | default('?', true) }};{{ cliente }};{{ inventory_hostname }};{{ item.Pool }};{{ item.Status }};{{ item.Mensagem }}"
+            create: true
+            mode: "0644"
+          loop: "{{ resultado.output | default([]) }}"
+          loop_control:
+            label: "{{ item.Pool }}"
+          delegate_to: localhost
+          check_mode: false
+
+    - name: Aguardar antes do proximo servidor
+      ansible.builtin.pause:
+        seconds: "{{ pausa_entre_servidores | default(15) | int }}"
+      when:
+        - resultado is changed
+        - inventory_hostname != ansible_play_hosts_all[-1]

@@ -1,0 +1,131 @@
+// =============================================================================
+// Jenkins - Recycle de Application Pool por cliente (IIS)
+// Playbook: IIS/recycle-pool-cliente.yml
+//
+// Fluxo:  1) Plano (sempre)  ->  2) Aprovacao manual (so se ACAO=EXECUTAR)  ->  3) Recycle
+//
+// Credencial: Jenkins "iis-deploy-winrm" (Username with password).
+//   Substitui o ansible-vault: o inventory/group_vars/all/vault.yml NAO e usado aqui.
+//
+// Requisitos do agente: ansible-core, python3-winrm e as colecoes do requirements.yml.
+// =============================================================================
+
+pipeline {
+    agent { label 'ansible' }   // ajuste para o label do seu agente Linux com ansible
+
+    options {
+        disableConcurrentBuilds()            // nunca dois recycles ao mesmo tempo
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '50'))
+    }
+
+    parameters {
+        string(name: 'CLIENTE', defaultValue: '', trim: true,
+               description: 'Nome do cliente (parte do nome do site). Ex.: biolab')
+        choice(name: 'SERVIDOR',
+               choices: ['webhomolog', 'web03', 'web01', 'web02', 'web04', 'PRODUCAO (web01-04)', 'TODOS'],
+               description: 'Onde rodar. O padrao e o homolog.')
+        choice(name: 'ACAO', choices: ['PLANO', 'EXECUTAR'],
+               description: 'PLANO = so mostra o que seria feito. EXECUTAR = recicla (pede aprovacao).')
+        booleanParam(name: 'BUSCA_EXATA', defaultValue: false,
+                     description: 'Nome exato do site/aplicacao, em vez de "contem".')
+    }
+
+    environment {
+        ANSIBLE_CONFIG       = "${WORKSPACE}/ansible.cfg"
+        ANSIBLE_FORCE_COLOR  = 'false'
+        ANSIBLE_STDOUT_CALLBACK = 'default'
+        INV_DIR              = "${WORKSPACE}/.jenkins-inventory"
+        CREDENCIAL_WINRM     = 'iis-deploy-winrm'
+    }
+
+    stages {
+        stage('Validar parametros') {
+            steps {
+                script {
+                    if (!(params.CLIENTE ==~ /^[A-Za-z0-9._-]{3,}$/)) {
+                        error("CLIENTE invalido: minimo 3 caracteres, apenas letras, numeros, ponto, hifen e underline.")
+                    }
+                    def limites = [
+                        'PRODUCAO (web01-04)': 'iis:!homolog',
+                        'TODOS'              : 'iis',
+                    ]
+                    env.LIMITE = limites.get(params.SERVIDOR, params.SERVIDOR)
+
+                    // Quem disparou o build (vai para o log do playbook)
+                    def causa = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
+                    env.EXECUTADO_POR = causa ? "jenkins:${causa[0].userId}" : 'jenkins:automatico'
+
+                    currentBuild.displayName = "#${BUILD_NUMBER} ${params.CLIENTE} @ ${params.SERVIDOR} (${params.ACAO})"
+                }
+            }
+        }
+
+        stage('Preparar inventario') {
+            steps {
+                // Copia o inventario SEM o vault.yml: a credencial vem do Jenkins.
+                sh '''
+                    rm -rf "$INV_DIR"
+                    cp -r inventory "$INV_DIR"
+                    rm -f "$INV_DIR/group_vars/all/vault.yml"
+                    ansible-galaxy collection install -r requirements.yml >/dev/null
+                '''
+            }
+        }
+
+        stage('Plano') {
+            steps {
+                script { rodarPlaybook(false) }
+            }
+        }
+
+        stage('Aprovacao') {
+            when { expression { params.ACAO == 'EXECUTAR' } }
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: "Confirma o RECYCLE das pools de '${params.CLIENTE}' em ${params.SERVIDOR}? Confira o plano no log acima.",
+                          ok: 'Sim, reciclar'
+                }
+            }
+        }
+
+        stage('Recycle') {
+            when { expression { params.ACAO == 'EXECUTAR' } }
+            steps {
+                script { rodarPlaybook(true) }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'logs/iis-recycle-pool.log', allowEmptyArchive: true
+            sh 'rm -rf "$INV_DIR"'
+        }
+    }
+}
+
+// Roda o playbook com a credencial do Jenkins.
+// A senha NAO aparece na linha de comando: o ansible le das variaveis de ambiente.
+def rodarPlaybook(boolean executar) {
+    withCredentials([usernamePassword(credentialsId: env.CREDENCIAL_WINRM,
+                                      usernameVariable: 'WINRM_USER',
+                                      passwordVariable: 'WINRM_PASS')]) {
+        withEnv(["CONFIRMAR=${executar ? 'SIM' : 'NAO'}",
+                 "BUSCA_EXATA=${params.BUSCA_EXATA}",
+                 "CLIENTE=${params.CLIENTE}"]) {
+            sh '''
+                ansible-playbook IIS/recycle-pool-cliente.yml \
+                  -i "$INV_DIR/hosts.ini" \
+                  --limit "$LIMITE" \
+                  -e "cliente=$CLIENTE" \
+                  -e "confirmar=$CONFIRMAR" \
+                  -e "busca_exata=$BUSCA_EXATA" \
+                  -e "executado_por=$EXECUTADO_POR" \
+                  -e "vault_winrm_user={{ lookup('env', 'WINRM_USER') }}" \
+                  -e "vault_winrm_password={{ lookup('env', 'WINRM_PASS') }}"
+            '''
+        }
+    }
+}
