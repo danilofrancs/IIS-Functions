@@ -2,7 +2,7 @@
 
 Playbook: `recycle-pool-cliente.yml`
 
-Faz o **recycle das Application Pools de um cliente** (ex.: BIOLAB) sem afetar os
+Faz o **recycle das Application Pools de um cliente** (ex.: CLIENTEFARMA) sem afetar os
 outros clientes. Você informa o nome, ele procura nos servidores IIS, mostra o que
 vai fazer e só executa se você confirmar.
 ---

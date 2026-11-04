@@ -25,7 +25,7 @@ pipeline {
                description: 'Nome do cliente (parte do nome do site). Ex.: biolab')
         choice(name: 'SERVIDOR',
                choices: ['webhomolog', 'web03', 'web01', 'web02', 'web04', 'PRODUCAO (web01-04)', 'TODOS'],
-               description: 'Onde rodar. O padrao e o homolog.')
+               description: 'Onde rodar. Onde vai buscar o site do cliente. "TODOS" = todos os servidores IIS (homolog + web01-04).')
         choice(name: 'ACAO', choices: ['PLANO', 'EXECUTAR'],
                description: 'PLANO = so mostra o que seria feito. EXECUTAR = recicla (pede aprovacao).')
         booleanParam(name: 'BUSCA_EXATA', defaultValue: false,
