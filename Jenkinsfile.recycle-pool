@@ -2,7 +2,8 @@
 // Jenkins - Recycle de Application Pool por cliente (IIS)
 // Playbook: recycle-pool-cliente.yml
 //
-// Fluxo:  1) Plano (sempre)  ->  2) Aprovacao manual (so se ACAO=EXECUTAR)  ->  3) Recycle
+// Fluxo:  ACAO=PLANO -> so mostra o que seria feito  |  ACAO=EXECUTAR -> recicla direto
+//         (o proprio Jenkins registra quem disparou cada build)
 //
 // Credencial: Jenkins "iis-deploy-winrm" (Username with password).
 //   Substitui o ansible-vault: o inventory/group_vars/all/vault.yml NAO e usado aqui.
@@ -27,7 +28,7 @@ pipeline {
                choices: ['webhomolog', 'web03', 'web01', 'web02', 'web04', 'PRODUCAO (web01-04)', 'TODOS'],
                description: 'Onde rodar. Onde vai buscar o site do cliente. "TODOS" = todos os servidores IIS (homolog + web01-04).')
         choice(name: 'ACAO', choices: ['PLANO', 'EXECUTAR'],
-               description: 'PLANO = so mostra o que seria feito. EXECUTAR = recicla (pede aprovacao).')
+               description: 'PLANO = so mostra o que seria feito. EXECUTAR = recicla direto, sem aprovacao.')
         booleanParam(name: 'BUSCA_EXATA', defaultValue: false,
                      description: 'Nome exato do site/aplicacao, em vez de "contem".')
     }
@@ -53,10 +54,6 @@ pipeline {
                     ]
                     env.LIMITE = limites.get(params.SERVIDOR, params.SERVIDOR)
 
-                    // Quem disparou o build (vai para o log do playbook)
-                    def causa = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
-                    env.EXECUTADO_POR = causa ? "jenkins:${causa[0].userId}" : 'jenkins:automatico'
-
                     currentBuild.displayName = "#${BUILD_NUMBER} ${params.CLIENTE} @ ${params.SERVIDOR} (${params.ACAO})"
                 }
             }
@@ -76,18 +73,9 @@ pipeline {
         }
 
         stage('Plano') {
+            when { expression { params.ACAO == 'PLANO' } }
             steps {
                 script { rodarPlaybook(false) }
-            }
-        }
-
-        stage('Aprovacao') {
-            when { expression { params.ACAO == 'EXECUTAR' } }
-            steps {
-                timeout(time: 15, unit: 'MINUTES') {
-                    input message: "Confirma o RECYCLE das pools de '${params.CLIENTE}' em ${params.SERVIDOR}? Confira o plano no log acima.",
-                          ok: 'Sim, reciclar'
-                }
             }
         }
 
@@ -123,7 +111,7 @@ def rodarPlaybook(boolean executar) {
                   -e "cliente=$CLIENTE" \
                   -e "confirmar=$CONFIRMAR" \
                   -e "busca_exata=$BUSCA_EXATA" \
-                  -e "executado_por=$EXECUTADO_POR" \
+\
                   -e "{\\"log_recycle\\": \\"$WORKSPACE/logs/iis-recycle-pool.log\\"}" \
                   -e "vault_winrm_user={{ lookup('env', 'WINRM_USER') }}" \
                   -e "vault_winrm_password={{ lookup('env', 'WINRM_PASS') }}"

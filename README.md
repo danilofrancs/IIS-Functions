@@ -79,15 +79,14 @@ Arquivo: `Jenkinsfile.recycle-pool`
 | `ACAO`        | `PLANO` = só mostra / `EXECUTAR` = recicla             |
 | `BUSCA_EXATA` | marque para nome exato                                 |
 
-Com `EXECUTAR`, o Jenkins mostra o plano e **para pedindo aprovação**
-("Sim, reciclar"). Confira o plano no log antes de aprovar. Sem aprovação em
-15 min, cancela sozinho.
+Com `EXECUTAR`, o Jenkins **recicla direto, sem pedir aprovação**. Se quiser só
+conferir o que seria feito, rode antes com `PLANO`.
 
 **Credencial:** usa a credencial `iis-deploy-winrm` do Jenkins. O `vault.yml`
 não é usado no Jenkins (nem precisa da senha do vault).
 
-O log de cada recycle fica anexado ao build (*Artifacts* → `iis-recycle-pool.log`),
-com o usuário do Jenkins que disparou.
+O log de cada recycle fica anexado ao build (*Artifacts* → `iis-recycle-pool.log`).
+Quem disparou e quando fica no próprio histórico de builds do Jenkins.
 
 ---
 
