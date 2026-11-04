@@ -11,7 +11,7 @@
 // =============================================================================
 
 pipeline {
-    agent { label 'ansible' }   // ajuste para o label do seu agente Linux com ansible
+    agent any  // ajuste para o label do seu agente Linux com ansible
 
     options {
         disableConcurrentBuilds()            // nunca dois recycles ao mesmo tempo
