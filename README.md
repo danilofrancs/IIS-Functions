@@ -113,12 +113,12 @@ Quando uma trava bloqueia, **nada é alterado**.
 
 ## Pelo Jenkins
 
-Arquivo: `IIS/Jenkinsfile.recycle-pool`
+Arquivo: `Jenkinsfile.recycle-pool`
 
 **Configurar o job (uma vez)**
 1. Novo item → **Pipeline**.
 2. *Pipeline script from SCM* → Git → repositório do GitHub, branch `main`.
-3. *Script Path*: `IIS/Jenkinsfile.recycle-pool`
+3. *Script Path*: `Jenkinsfile.recycle-pool`
 4. Salvar e rodar uma vez ("Build Now"): a 1ª execução só carrega os parâmetros.
 
 **Usar:** *Build with Parameters*

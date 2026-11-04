@@ -1,6 +1,6 @@
 // =============================================================================
 // Jenkins - Recycle de Application Pool por cliente (IIS)
-// Playbook: IIS/recycle-pool-cliente.yml
+// Playbook: recycle-pool-cliente.yml
 //
 // Fluxo:  1) Plano (sempre)  ->  2) Aprovacao manual (so se ACAO=EXECUTAR)  ->  3) Recycle
 //
@@ -116,7 +116,7 @@ def rodarPlaybook(boolean executar) {
                  "BUSCA_EXATA=${params.BUSCA_EXATA}",
                  "CLIENTE=${params.CLIENTE}"]) {
             sh '''
-                ansible-playbook IIS/recycle-pool-cliente.yml \
+                ansible-playbook recycle-pool-cliente.yml \
                   -i "$INV_DIR/hosts.ini" \
                   --limit "$LIMITE" \
                   -e "cliente=$CLIENTE" \
