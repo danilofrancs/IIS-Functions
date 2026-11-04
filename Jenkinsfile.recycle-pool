@@ -10,7 +10,6 @@
 //
 // Requisitos do agente: ansible-core, python3-winrm e as colecoes do requirements.yml.
 // =============================================================================
-
 pipeline {
     agent any  // ajuste para o label do seu agente Linux com ansible
 
@@ -40,7 +39,6 @@ pipeline {
         INV_DIR              = "${WORKSPACE}/.jenkins-inventory"
         CREDENCIAL_WINRM     = 'iis-deploy-winrm'
     }
-
     stages {
         stage('Validar parametros') {
             steps {
@@ -58,7 +56,6 @@ pipeline {
                 }
             }
         }
-
         stage('Preparar inventario') {
             steps {
                 // Copia o inventario SEM o vault.yml: a credencial vem do Jenkins.
@@ -111,7 +108,6 @@ def rodarPlaybook(boolean executar) {
                   -e "cliente=$CLIENTE" \
                   -e "confirmar=$CONFIRMAR" \
                   -e "busca_exata=$BUSCA_EXATA" \
-\
                   -e "{\\"log_recycle\\": \\"$WORKSPACE/logs/iis-recycle-pool.log\\"}" \
                   -e "vault_winrm_user={{ lookup('env', 'WINRM_USER') }}" \
                   -e "vault_winrm_password={{ lookup('env', 'WINRM_PASS') }}"
