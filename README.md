@@ -5,52 +5,15 @@ Playbook: `recycle-pool-cliente.yml`
 Faz o **recycle das Application Pools de um cliente** (ex.: BIOLAB) sem afetar os
 outros clientes. Você informa o nome, ele procura nos servidores IIS, mostra o que
 vai fazer e só executa se você confirmar.
-
-> Rode sempre a partir da raiz do projeto (`ORQUESTRACAO/`).
-
----
-
-## Passo a passo
-
-**1. Ver o plano (não altera nada)**
-```bash
-ansible-playbook IIS/recycle-pool-cliente.yml -e cliente=biolab --limit web03 --ask-vault-pass
-```
-
-**2. Conferir a lista "VAI RECICLAR"** no resultado.
-Só devem aparecer pools do próprio cliente. Se aparecer algo estranho, **pare**.
-
-**3. Executar**
-```bash
-ansible-playbook IIS/recycle-pool-cliente.yml -e cliente=biolab -e confirmar=SIM --limit web03 --ask-vault-pass
-```
-
-O passo 1 e o passo 3 são o mesmo comando; a diferença é só o `-e confirmar=SIM`.
-
----
-
-## Onde ele roda (`--limit`)
-
-O `--limit` é um filtro: o playbook roda **somente** nos servidores listados.
-
-| Comando                       | Onde recicla                                |
-|-------------------------------|---------------------------------------------|
-| `--limit web03`               | só no web03                                 |
-| `--limit webhomolog`          | só no homolog                               |
-| `--limit web03,webhomolog`    | nos dois                                    |
-| sem `--limit`                 | em todo servidor IIS onde achar o cliente   |
-
-Para conferir os servidores sem executar nada, acrescente `--list-hosts`.
-
 ---
 
 ## Como ler o plano
 
 ```
-[web03] sites: BIOLAB.salesfarma.com.br
+[web03] sites: cliente.empresax.com.br
   VAI RECICLAR (6):
-    + BIOLAB  ->  BIOLAB.salesfarma.com.br/app, .../pdv
-    + Biolab Ecommerce  ->  BIOLAB.salesfarma.com.br/Ecommerce
+    + BIOLAB  ->  cliente.empresax.com.br/app, .../pdv
+    + Biolab Ecommerce  ->  cliente.empresax.com.br/Ecommerce
   NAO VAI RECICLAR (11):
     - Root (Started): COMPARTILHADA com mais 15 site(s), ex.: uq..., arese...
     - BiolabHomolog ApiIntegracaoGam (Stopped): pool Stopped
@@ -80,20 +43,6 @@ Para conferir os servidores sem executar nada, acrescente `--list-hosts`.
 
 O recycle do IIS é "suave": sobe um processo novo e o antigo termina as
 requisições em andamento. Normalmente o site não cai.
-
----
-
-## Travas de segurança
-
-| Trava                                         | Resultado                         |
-|-----------------------------------------------|-----------------------------------|
-| Nome com menos de 3 letras ou caractere estranho | não roda                       |
-| Cliente não encontrado                        | não roda                          |
-| Busca casou com mais de 2 sites num servidor  | não roda (nome genérico demais)   |
-| Mais de 10 pools a reciclar num servidor      | não roda                          |
-| Nenhuma pool elegível                         | não roda                          |
-
-Quando uma trava bloqueia, **nada é alterado**.
 
 ---
 
@@ -136,9 +85,6 @@ Com `EXECUTAR`, o Jenkins mostra o plano e **para pedindo aprovação**
 
 **Credencial:** usa a credencial `iis-deploy-winrm` do Jenkins. O `vault.yml`
 não é usado no Jenkins (nem precisa da senha do vault).
-
-**Agente:** precisa de um agente Linux com label `ansible` que tenha
-`ansible` e `python3-winrm`. Se o seu label for outro, troque no início do Jenkinsfile.
 
 O log de cada recycle fica anexado ao build (*Artifacts* → `iis-recycle-pool.log`),
 com o usuário do Jenkins que disparou.
